@@ -100,6 +100,9 @@ void validate_set_state(const te::Environment& env,
 struct PyEventCallbackFn {
     nb::callable callback;
     void operator()(const te::Event& evt) const {
+        // Events fire from applyCommand, which now runs with the GIL released (and from C++
+        // threads such as the ROS2 monitor), so re-enter the interpreter explicitly.
+        nb::gil_scoped_acquire gil;
         callback(nb::cast(evt, nb::rv_policy::reference));
     }
 };
@@ -379,6 +382,19 @@ NB_MODULE(_tesseract_environment, m) {
             } else {
                 cmd_ptr = std::make_shared<te::AddLinkCommand>(*cmd.getLink(), cmd.replaceAllowed());
             }
+            // Building collision shapes for a mesh- or SDF-heavy link takes seconds; hold no GIL.
+            // Python can still be re-entered from here - an event callback, or the sampler of a
+            // lazy SignedDistanceField that bullet evaluates per cell node - and nanobind re-takes
+            // the GIL for both. What must not happen inside this region is SignedDistanceField::
+            // getDistances()/operator==: those take a process-wide static mutex and then call the
+            // sampler, so a Python thread blocked on that mutex while holding the GIL deadlocks us
+            // (see writeBytes() in the geometry bindings). Nothing on the applyCommand path does -
+            // bullet transcodes through getDistance(), which takes no lock.
+            // ponytail: also deadlocks if a Python event callback is registered AND another Python
+            // thread calls a non-releasing Environment method - callbacks fire under the env's
+            // unique lock, so this thread would hold that lock while re-acquiring the GIL. Lift by
+            // skipping the release when Python callbacks are registered, if that ever bites.
+            nb::gil_scoped_release nogil;
             return self.applyCommand(cmd_ptr);
         }, "command"_a)
         // Commands - RemoveLinkCommand
@@ -394,6 +410,7 @@ NB_MODULE(_tesseract_environment, m) {
             } else {
                 cmd_ptr = std::make_shared<te::AddSceneGraphCommand>(*cmd.getSceneGraph(), cmd.getPrefix());
             }
+            nb::gil_scoped_release nogil;  // see AddLinkCommand above
             return self.applyCommand(cmd_ptr);
         }, "command"_a)
         // Commands - AddKinematicsInformationCommand
@@ -539,12 +556,16 @@ NB_MODULE(_tesseract_environment, m) {
         // TCP
         .def("findTCPOffset", &te::Environment::findTCPOffset, "manip_info"_a)
         // Contact managers
+        // GIL released for the same reason as applyCommand: on the first call these build every
+        // collision shape in the scene, which is where an SDF- or mesh-heavy environment spends its
+        // seconds when no manager was cached for applyCommand to update. No event callbacks fire
+        // here and the env is only read-locked, so the applyCommand caveat does not apply.
         .def("getDiscreteContactManager", [](const te::Environment& self) {
             return self.getDiscreteContactManager();
-        }, nb::keep_alive<0, 1>())
+        }, nb::keep_alive<0, 1>(), nb::call_guard<nb::gil_scoped_release>())
         .def("getContinuousContactManager", [](const te::Environment& self) {
             return self.getContinuousContactManager();
-        }, nb::keep_alive<0, 1>())
+        }, nb::keep_alive<0, 1>(), nb::call_guard<nb::gil_scoped_release>())
         .def("setActiveDiscreteContactManager", &te::Environment::setActiveDiscreteContactManager, "name"_a)
         .def("setActiveContinuousContactManager", &te::Environment::setActiveContinuousContactManager, "name"_a)
         .def("clearCachedDiscreteContactManager", &te::Environment::clearCachedDiscreteContactManager)

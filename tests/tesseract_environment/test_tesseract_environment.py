@@ -231,3 +231,52 @@ def test_clear_cached_contact_managers():
     # New managers should be functional
     results2 = ContactResultMap()
     discrete_mgr2.contactTest(results2, request)
+
+
+def test_apply_command_lazy_sdf_link():
+    """applyCommand drops the GIL, so the Python re-entry paths have to still work.
+
+    A field from createSignedDistanceField is nothing but a Python callable: bullet evaluates it
+    per cell node while building the collision shape, which now happens with the GIL released.
+    """
+    from tesseract_robotics.tesseract_geometry import createSignedDistanceField
+    from tesseract_robotics.tesseract_scene_graph import Collision, Joint, JointType, Link
+
+    samples = []
+
+    def sampler(point):
+        samples.append(point)
+        return float(np.linalg.norm(point) - 0.1)
+
+    sdf = createSignedDistanceField(
+        sampler,
+        np.array([-0.2, -0.2, -0.2]),
+        np.array([0.2, 0.2, 0.2]),
+        np.array([5, 5, 5]),
+    )
+
+    link = Link("sdf_link")
+    collision = Collision()
+    collision.geometry = sdf
+    link.addCollision(collision)
+
+    joint = Joint("sdf_joint")
+    joint.type = JointType.FIXED
+    joint.parent_link_name = "base_link"
+    joint.child_link_name = "sdf_link"
+
+    env = get_environment()
+    # warm the discrete cache so applyCommand builds the shape instead of deferring it; the
+    # continuous one goes back cold because bullet's cast path rejects a non-convex shape
+    assert env.getDiscreteContactManager() is not None
+    env.clearCachedContinuousContactManager()
+
+    events = []
+    cb = tesseract_environment.EventCallbackFn(lambda evt: events.append(evt.type))
+    env.addEventCallback(1, cb)
+
+    assert env.applyCommand(tesseract_environment.AddLinkCommand(link, joint))
+    assert "sdf_link" in env.getLinkNames()
+    # both re-entered the interpreter from the GIL-released region
+    assert samples
+    assert events
