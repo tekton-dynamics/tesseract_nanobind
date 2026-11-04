@@ -7,11 +7,11 @@
 - git:
     local-name: tesseract_ros2
     uri: https://github.com/tesseract-robotics/tesseract_ros2.git
-    version: 7b8e51ec95c20acf66a5236eabea1c45a0b68e91
+    version: 568b3761b05ddfdf42eb16aa2b9a0cf08abe663d
 # CMake macros every tesseract_ros2 package declares as a build_depend
 # (find_package(ros_industrial_cmake_boilerplate REQUIRED)). Built as part of the
-# workspace, so colcon orders it ahead of the packages that need it. Tag 0.7.4.
+# workspace, so colcon orders it ahead of the packages that need it. Tag 0.7.5.
 - git:
     local-name: ros_industrial_cmake_boilerplate
     uri: https://github.com/ros-industrial/ros_industrial_cmake_boilerplate.git
-    version: f6db7e152c7ca428e1c8388432cf61e82131f467
+    version: a2029ed36c425dc4ef4530cd53b0b41735a710f3
