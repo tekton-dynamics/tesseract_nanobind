@@ -65,7 +65,7 @@ def test_tesseract_msgs_trajectory_roundtrip():
     assert traj2.description == "test_trajectory"
     assert len(traj2.states) == 3
     for orig, got in zip(traj.states, traj2.states):
-        assert orig.joint_names == got.joint_names
+        assert orig.joint_ids == got.joint_ids
         assert np.allclose(orig.position, got.position)
         assert orig.time == pytest.approx(got.time)
 
@@ -85,7 +85,7 @@ def test_trajectory_msgs_trajectory_roundtrip():
 
     traj2 = ru.legacy_msg_to_trajectory(msg)
     assert len(traj2.states) == 3
-    assert traj2.states[2].joint_names == ["j1", "j2"]
+    assert traj2.states[2].joint_ids == ["j1", "j2"]
     assert np.allclose(traj2.states[2].position, [1.0, -1.0])
 
 

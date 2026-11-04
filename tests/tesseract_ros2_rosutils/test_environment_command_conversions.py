@@ -79,8 +79,8 @@ def test_add_link_with_joint_roundtrip():
     link = Link("child_link")
     joint = Joint("new_joint")
     joint.type = JointType.FIXED
-    joint.parent_link_name = "world"
-    joint.child_link_name = "child_link"
+    joint.parent_link_id = "world"
+    joint.child_link_id = "child_link"
     cmd = AddLinkCommand(link, joint)
     msg = ru.command_to_msg(cmd)
     assert msg.command == ru.EnvironmentCommand.ADD_LINK
@@ -104,7 +104,7 @@ def test_remove_link_command_roundtrip():
 
     cmd2 = ru.msg_to_command(msg)
     assert isinstance(cmd2, RemoveLinkCommand)
-    assert cmd2.getLinkName() == "link2"
+    assert cmd2.getLinkId() == "link2"
 
 
 def test_remove_joint_command_roundtrip():
@@ -115,7 +115,7 @@ def test_remove_joint_command_roundtrip():
 
     cmd2 = ru.msg_to_command(msg)
     assert isinstance(cmd2, RemoveJointCommand)
-    assert cmd2.getJointName() == "joint2"
+    assert cmd2.getJointId() == "joint2"
 
 
 def test_move_joint_command_roundtrip():
@@ -190,7 +190,7 @@ def test_commands_vector_roundtrip():
     assert isinstance(cmds2[0], AddLinkCommand)
     assert isinstance(cmds2[1], RemoveJointCommand)
     assert isinstance(cmds2[2], AddLinkCommand)
-    assert cmds2[1].getJointName() == "joint2"
+    assert cmds2[1].getJointId() == "joint2"
 
 
 def test_empty_commands_vector():
