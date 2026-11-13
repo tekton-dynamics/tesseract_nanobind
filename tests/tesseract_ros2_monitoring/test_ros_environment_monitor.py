@@ -1,0 +1,109 @@
+"""Lifecycle smoke tests for tesseract_ros2_monitoring bindings.
+
+The whole module is skipped when the C++ extension is absent — this
+matches a ROS-less build, where CMake auto-detects no ROS 2 and skips
+the tesseract_ros2_* modules.
+"""
+
+import os
+
+import pytest
+
+pytest.importorskip("tesseract_robotics.tesseract_ros2_monitoring")
+
+from tesseract_robotics import (  # noqa: E402
+    environment as tesseract_environment,
+)
+from tesseract_robotics import (
+    get_tesseract_support_path,
+)
+from tesseract_robotics import (
+    srdf as tesseract_srdf,
+)
+from tesseract_robotics import (
+    tesseract_ros2_monitoring as tm_ros2,
+)
+from tesseract_robotics import (
+    urdf as tesseract_urdf,
+)
+
+from ..tesseract_support_resource_locator import TesseractSupportResourceLocator  # noqa: E402
+
+
+def _make_env():
+    """Build an Environment from the bundled iiwa URDF/SRDF."""
+    support = str(get_tesseract_support_path())
+    locator = TesseractSupportResourceLocator()
+    sg = tesseract_urdf.parseURDFFile(os.path.join(support, "urdf/lbr_iiwa_14_r820.urdf"), locator)
+    srdf = tesseract_srdf.SRDFModel()
+    srdf.initFile(sg, os.path.join(support, "urdf/lbr_iiwa_14_r820.srdf"), locator)
+    env = tesseract_environment.Environment()
+    assert env.init(sg, srdf)
+    return env
+
+
+@pytest.fixture(scope="module")
+def ctx():
+    """Module-scoped ROSContext. install_signal_handlers=False avoids rclcpp
+    stomping on pytest's own SIGINT handling (matters under pytest-xdist)."""
+    c = tm_ros2.ROSContext(
+        "tesseract_nanobind_test_node",
+        args=[],
+        install_signal_handlers=False,
+    )
+    yield c
+    c.shutdown()
+
+
+def test_ros_context_node_name(ctx):
+    assert ctx.node_name() == "tesseract_nanobind_test_node"
+
+
+def test_ros_context_state_introspection(ctx):
+    # `is_active` reflects the wrapper; `is_ok` reflects rclcpp's global
+    # default context. Both should be True for a freshly built ctx.
+    assert ctx.is_active() is True
+    assert ctx.is_ok() is True
+
+
+def test_ros_context_get_node(ctx):
+    node = ctx.get_node()
+    assert node.get_name() == "tesseract_nanobind_test_node"
+    # default namespace for a node created without explicit namespace is "/"
+    assert node.get_namespace() == "/"
+    assert node.get_fully_qualified_name() == "/tesseract_nanobind_test_node"
+
+
+def test_construct_with_prebuilt_env(ctx):
+    env = _make_env()
+    mon = tm_ros2.ROSEnvironmentMonitor(ctx, env, "nb_test_ns")
+    assert mon.getNamespace() == "nb_test_ns"
+    assert mon.getEnvironment() is not None
+    mon.shutdown()
+
+
+def test_publish_lifecycle(ctx):
+    mon = tm_ros2.ROSEnvironmentMonitor(ctx, _make_env(), "nb_test_pub")
+    mon.startPublishingEnvironment(False)
+    mon.setEnvironmentPublishingFrequency(10.0)
+    assert mon.getEnvironmentPublishingFrequency() == pytest.approx(10.0)
+    mon.stopPublishingEnvironment()
+    mon.shutdown()
+
+
+def test_state_monitor_lifecycle(ctx):
+    mon = tm_ros2.ROSEnvironmentMonitor(ctx, _make_env(), "nb_test_state")
+    mon.startStateMonitor("/nb_test_joint_states", False)
+    sm = mon.getStateMonitor()
+    assert sm.isActive()
+    assert sm.getMonitoredTopic() == "/nb_test_joint_states"
+    mon.stopStateMonitor()
+    assert not sm.isActive()
+    mon.shutdown()
+
+
+def test_wait_for_connection_short_timeout(ctx):
+    mon = tm_ros2.ROSEnvironmentMonitor(ctx, _make_env(), "nb_test_wait")
+    # Env is already initialised, so waitForConnection returns True promptly.
+    assert mon.waitForConnection(0.5) is True
+    mon.shutdown()

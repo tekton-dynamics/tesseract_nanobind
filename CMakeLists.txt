@@ -455,11 +455,156 @@ target_link_libraries(_serialization PRIVATE
 # MSVC: the registrations and archives exceed the default COFF section limit (C1128).
 target_compile_options(_serialization PRIVATE $<$<CXX_COMPILER_ID:MSVC>:/bigobj>)
 
+# ============== Optional ROS 2 bindings ==============
+# tesseract_ros2_monitoring / tesseract_ros2_rosutils get the same auto-detect treatment
+# as the descartes / trajopt components above: they build when everything they need is
+# visible to find_package(), and are skipped with a message otherwise. Nothing has to be
+# passed on the command line.
+#
+# Two halves have to line up:
+#   * the ROS 2 distro (rclcpp + the message packages) — sourcing
+#     /opt/ros/<distro>/setup.bash puts it on CMAKE_PREFIX_PATH;
+#   * tesseract_ros2 (tesseract_msgs, tesseract_rosutils, tesseract_monitoring), built
+#     against the same tesseract as the bindings: from a prefix on CMAKE_PREFIX_PATH that
+#     carries both (e.g. a colcon install of the whole stack), or an overlay in ws/install.
+#
+#   AUTO (default) - build iff both halves are found, otherwise skip with a hint
+#   ON             - require them; configure fails listing what is missing
+#   OFF            - never build. Pass it to keep a wheel ROS-free when building from a
+#                    ROS-sourced shell.
+set(TESSERACT_NANOBIND_BUILD_ROS AUTO CACHE STRING
+    "Build ROS 2 bindings: AUTO (build if found), ON (require), OFF (never)")
+set_property(CACHE TESSERACT_NANOBIND_BUILD_ROS PROPERTY STRINGS AUTO ON OFF)
+
+# "AUTO"/"ON" are truthy to if(); "OFF"/"0"/"" are not — so this also honors the old
+# boolean spelling of the flag (-DTESSERACT_NANOBIND_BUILD_ROS=ON/OFF still works).
+set(TESSERACT_ROS_BINDINGS FALSE)
+if(TESSERACT_NANOBIND_BUILD_ROS)
+  if(TESSERACT_NANOBIND_BUILD_ROS STREQUAL "AUTO")
+    set(_ros_find_mode QUIET)
+  else()
+    set(_ros_find_mode REQUIRED)
+  endif()
+
+  # A sourced distro is the precondition for everything below, and the test for it is the
+  # environment — NOT a find_package result. find_package caches <pkg>_DIR in
+  # CMakeCache.txt, and the build dir is shared across shells: once a ROS-sourced configure
+  # has run, a plain shell would keep "finding" /opt/ros and then fail hard, because
+  # rclcpp's extras run ament's python helpers, which need the distro's PYTHONPATH
+  # (ModuleNotFoundError: ament_package). AMENT_PREFIX_PATH is re-read every configure, so
+  # gating on it makes ROS detection follow the shell instead of the build directory.
+  # Same signal scripts/install.sh gates on. (Non-empty check, not DEFINED — matches the
+  # TESSERACT_CPP_PREFIX handling at the top of this file.)
+  if("$ENV{AMENT_PREFIX_PATH}" STREQUAL "")
+    if(_ros_find_mode STREQUAL "REQUIRED")
+      message(FATAL_ERROR
+              "TESSERACT_NANOBIND_BUILD_ROS=${TESSERACT_NANOBIND_BUILD_ROS} but no ROS 2 "
+              "environment is sourced (AMENT_PREFIX_PATH is empty). "
+              "Run: source /opt/ros/<distro>/setup.bash")
+    endif()
+    message(STATUS "ROS 2 bindings: skipped, no ROS 2 environment sourced. "
+                   "Source /opt/ros/<distro>/setup.bash to enable.")
+  else()
+    # Step 1 — the distro. ament_cmake is deliberately absent: we never call its macros
+    # (see the note on the targets below).
+    #
+    # This MUST come before the overlay is touched, and ws/install must stay off the prefix
+    # path until it succeeds. QUIET only suppresses find_package's own "not found" message;
+    # it does not make a config file that IS found harmless. The overlay's ament config
+    # files (tesseract_msgsConfig.cmake) call find_package(ament_cmake_libraries)
+    # internally, which hard-errors with no distro sourced — which would break the ordinary
+    # ROS-free build on any machine that has the overlay in its tree.
+    set(_ros_distro_pkgs rclcpp geometry_msgs sensor_msgs trajectory_msgs std_msgs builtin_interfaces)
+    set(_ros_missing_distro "")
+    foreach(_pkg IN LISTS _ros_distro_pkgs)
+      find_package(${_pkg} ${_ros_find_mode})
+      if(NOT ${_pkg}_FOUND)
+        list(APPEND _ros_missing_distro ${_pkg})
+      endif()
+    endforeach()
+
+    # With REQUIRED (ON) find_package already aborted, so anything reached here is AUTO.
+    if(_ros_missing_distro)
+      message(STATUS "ROS 2 bindings: skipped, ROS 2 is sourced but incomplete "
+                     "(missing: ${_ros_missing_distro}).")
+    else()
+      # Step 2 — the overlay, now that the ament packages its config files pull in can
+      # resolve. Adding ws/install to the prefix path here (rather than expecting the
+      # caller to export it) is what lets a plain `pip install -e .` find the overlay.
+      if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/ws/install")
+        list(APPEND CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/ws/install")
+        message(STATUS "Added tesseract_ros2 overlay prefix: ${CMAKE_CURRENT_SOURCE_DIR}/ws/install")
+      endif()
+
+      set(_ros_overlay_pkgs tesseract_msgs tesseract_rosutils tesseract_monitoring)
+      set(_ros_missing_overlay "")
+      foreach(_pkg IN LISTS _ros_overlay_pkgs)
+        find_package(${_pkg} ${_ros_find_mode})
+        if(NOT ${_pkg}_FOUND)
+          list(APPEND _ros_missing_overlay ${_pkg})
+        endif()
+      endforeach()
+
+      if(_ros_missing_overlay)
+        message(STATUS "ROS 2 bindings: skipped, tesseract_ros2 overlay not found "
+                       "(missing: ${_ros_missing_overlay}). Build tesseract_ros2 against this tesseract to enable.")
+      else()
+        set(TESSERACT_ROS_BINDINGS TRUE)
+      endif()
+    endif()
+  endif()
+endif()
+
+if(TESSERACT_ROS_BINDINGS)
+  message(STATUS "ROS 2 bindings: building against rclcpp ${rclcpp_VERSION}")
+  # Python packages around the compiled modules: tesseract_robotics/<name>/_<name>
+  list(APPEND TESSERACT_NB_WRAPPED_MODULES tesseract_ros2_monitoring tesseract_ros2_rosutils)
+
+  # tesseract_msgs generated headers (e.g. tesseract_msgs/msg/environment_state.hpp)
+  # reach the binding transitively via
+  # tesseract_monitoring::tesseract_monitoring_environment's
+  # INTERFACE_INCLUDE_DIRECTORIES. We do NOT call ament_target_dependencies
+  # here because that uses the plain target_link_libraries signature, which
+  # collides with nanobind's keyword (PRIVATE) form that
+  # add_tesseract_nanobind_extension already uses on the same target.
+  add_tesseract_nanobind_extension(
+    tesseract_ros2_monitoring
+    src/tesseract_ros2_monitoring/tesseract_ros2_monitoring_bindings.cpp
+    tesseract_monitoring::tesseract_monitoring_environment
+    tesseract::environment
+    tesseract::scene_graph
+    tesseract::common
+    rclcpp::rclcpp
+    ${tesseract_msgs_TARGETS}
+  )
+
+  add_tesseract_nanobind_extension(
+    tesseract_ros2_rosutils
+    src/tesseract_ros2_rosutils/tesseract_ros2_rosutils_bindings.cpp
+    tesseract_rosutils::tesseract_rosutils
+    tesseract::environment
+    tesseract::scene_graph
+    tesseract::common
+    rclcpp::rclcpp
+    ${tesseract_msgs_TARGETS}
+    ${geometry_msgs_TARGETS}
+    ${sensor_msgs_TARGETS}
+    ${trajectory_msgs_TARGETS}
+    ${std_msgs_TARGETS}
+    ${builtin_interfaces_TARGETS}
+  )
+endif()
+
 message(STATUS "============= Build Configuration =============")
 message(STATUS "Build Type: ${CMAKE_BUILD_TYPE}")
 message(STATUS "C++ Standard: C++${CMAKE_CXX_STANDARD}")
 message(STATUS "Python: ${Python_VERSION}")
 message(STATUS "nanobind: ${nanobind_VERSION}")
+if(TESSERACT_ROS_BINDINGS)
+  message(STATUS "ROS 2 bindings: ON (mode ${TESSERACT_NANOBIND_BUILD_ROS}, rclcpp ${rclcpp_VERSION})")
+else()
+  message(STATUS "ROS 2 bindings: OFF (mode ${TESSERACT_NANOBIND_BUILD_ROS})")
+endif()
 message(STATUS "===============================================")
 
 # ============== Install Bundled Data Files ==============

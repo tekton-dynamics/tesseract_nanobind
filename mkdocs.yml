@@ -191,6 +191,9 @@ nav:
     - Low-level SQP:
       - trajopt_ifopt: api/trajopt_ifopt.md
       - trajopt_sqp: api/trajopt_sqp.md
+    - ROS 2 (optional):
+      - tesseract_ros2_monitoring: api/tesseract_ros2_monitoring.md
+      - tesseract_ros2_rosutils: api/tesseract_ros2_rosutils.md
     - Tooling:
       - viewer: api/viewer.md
       - emitters: api/emitters.md
@@ -210,6 +213,7 @@ nav:
       - Linux wheels: developer/linux-wheels.md
       - macOS wheels: developer/macos-wheels.md
       - Windows wheels: developer/windows-wheels.md
+      - ROS 2 bindings: developer/ros.md
     - Binding internals:
       - Binding conventions: developer/binding-conventions.md
       - Binding API audit: developer/binding-api-audit.md
